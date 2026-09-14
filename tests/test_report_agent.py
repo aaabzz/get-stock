@@ -98,6 +98,56 @@ def _task(*, topic="technology_advantage", require_llm=False):
     )
 
 
+def _write_multitopic_chunks(data_dir):
+    path = (
+        data_dir
+        / "stocks"
+        / "000001"
+        / "processed"
+        / "reports"
+        / "report-multi"
+        / "chunks.jsonl"
+    )
+    atomic_write_json_lines(
+        path,
+        [
+            {
+                "announcement_id": "report-multi",
+                "chunk_id": "section-03-chunk-0001",
+                "section_id": "section-03",
+                "section_type": "management_discussion",
+                "heading": "第三节 管理层讨论与分析",
+                "start_page": 39,
+                "end_page": 40,
+                "text": "主营业务产品收入同比增长，主要由于市场需求增长。",
+            }
+        ],
+    )
+
+
+def _multitopic_task():
+    return ReportAnalysisTask(
+        task_id="report-task-multi",
+        stock_code="000001",
+        question="说明主营业务和增长原因",
+        requirements=(
+            ReportRequirement(
+                requirement_id="req-business",
+                topic="business_overview",
+                question="公司的主营业务是什么？",
+            ),
+            ReportRequirement(
+                requirement_id="req-explanation",
+                topic="management_explanation",
+                question="管理层如何解释增长？",
+            ),
+        ),
+        reports=(ReportReference(announcement_id="report-multi"),),
+        retrieval=ReportRetrievalOptions(top_k=2, adjacent_window=0),
+        constraints=ReportTaskConstraints(require_llm=False),
+    )
+
+
 def test_report_claim_topic_is_exposed_as_json_schema_enum():
     schema = ReportLLMAnalysis.model_json_schema()
     topic_schema = schema["$defs"]["ReportClaim"]["properties"]["topic"]
@@ -130,6 +180,41 @@ def test_report_agent_uses_heading_gate_and_excludes_financial_text(tmp_path):
     assert all(item.section_type != "financial_report" for item in result.evidence)
     assert all("会计数据和财务指标" not in item.text_excerpt for item in result.evidence)
     assert {claim.topic for claim in result.claims} == {"technology_advantage"}
+
+
+def test_report_evidence_receives_precise_multi_topic_authorization(tmp_path):
+    data_dir = tmp_path / "data"
+    _write_multitopic_chunks(data_dir)
+
+    result = ReportAnalysisAgent(data_dir).analyze(_multitopic_task())
+
+    assert result.status == "completed"
+    assert len(result.evidence) == 1
+    evidence = result.evidence[0]
+    assert set(evidence.allowed_claim_types) == {
+        "business_overview",
+        "management_explanation",
+    }
+    assert evidence.authorization_details["business_overview"].requirement_ids == [
+        "req-business"
+    ]
+    assert evidence.authorization_details["management_explanation"].requirement_ids == [
+        "req-explanation"
+    ]
+
+
+def test_adjacent_context_does_not_inherit_claim_authorization(tmp_path):
+    data_dir = tmp_path / "data"
+    _write_chunks(data_dir)
+
+    result = ReportAnalysisAgent(data_dir).analyze(_task())
+
+    context = next(
+        item for item in result.evidence if item.chunk_id == "section-02-chunk-0001"
+    )
+    assert "adjacent_context" in context.selection_reasons
+    assert context.allowed_claim_types == []
+    assert context.authorization_details == {}
 
 
 def test_heading_miss_returns_insufficient_without_calling_llm(tmp_path):
@@ -183,8 +268,53 @@ def test_report_agent_falls_back_on_cross_topic_llm_claim(tmp_path):
 
     assert result.status == "completed"
     assert result.llm_used is False
+    assert result.dropped_claim_count == 1
+    assert result.claim_validation_issues[0].reason_code == "unrequested_topic"
     assert result.evidence
     assert any("已降级为确定性分析" in item for item in result.limitations)
+
+
+def test_report_agent_isolates_one_invalid_claim_and_keeps_valid_claim(tmp_path):
+    data_dir = tmp_path / "data"
+    _write_chunks(data_dir)
+
+    def reasoner(packet):
+        evidence_id = next(
+            item["evidence_id"]
+            for item in packet["selected_evidence"]
+            if "technology_advantage" in item["allowed_claim_types"]
+        )
+        return ReportLLMAnalysis(
+            summary="包含一条有效结论和一条越权结论",
+            claims=[
+                ReportClaim(
+                    claim="公司披露正在推动科技赋能和数字化平台建设",
+                    topic="technology_advantage",
+                    assessment="positive",
+                    evidence_ids=[evidence_id],
+                    confidence=0.8,
+                ),
+                ReportClaim(
+                    claim="公司处于行业领先地位",
+                    topic="industry_position",
+                    assessment="positive",
+                    evidence_ids=[evidence_id],
+                    confidence=0.6,
+                ),
+            ],
+        )
+
+    result = ReportAnalysisAgent(data_dir, reasoner=reasoner).analyze(
+        _task(require_llm=True)
+    )
+
+    assert result.status == "completed"
+    assert result.llm_used is True
+    assert [claim.topic for claim in result.claims] == ["technology_advantage"]
+    assert result.dropped_claim_count == 1
+    assert result.claim_validation_issues[0].claim_index == 1
+    assert result.claim_validation_issues[0].reason_code == "unrequested_topic"
+    assert "已隔离" in result.summary
 
 
 def test_missing_chunks_returns_supervisor_action(tmp_path):

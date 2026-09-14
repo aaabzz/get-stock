@@ -233,9 +233,10 @@ analyze() → prepare() → reason() → finalize()
 - `reason()`：调用注入的 Reasoner，或者执行确定性降级；
 - `finalize()`：验证 Topic、Evidence 和输出 Schema，生成正式结果。
 
-财报 Agent 在 `prepare()` 后增加 `retrieve()`，按任务 Topic、heading 和关键词从授权的
-`chunks.jsonl` 中筛选内容。综合 Agent 在 `prepare()` 中适配各专业结果、检查需求覆盖和冲突，
-再进行综合推理。
+财报 Agent 在 `prepare()` 后增加 `retrieve()`，按每个 requirement 独立使用 Topic、heading
+和关键词从授权的 `chunks.jsonl` 中筛选内容。一个 chunk 只有分别通过对应 requirement 的
+规则判断，才能合并获得多个 Topic 授权；相邻 chunk 只自动获得上下文读取资格，不继承结论
+授权。综合 Agent 在 `prepare()` 中适配各专业结果、检查需求覆盖和冲突，再进行综合推理。
 
 ### 6.4 LangGraph 当前状态
 
@@ -494,6 +495,13 @@ LLM 输出分别由以下验证函数检查：
 - `verify_shareholder_analysis()`；
 - `verify_report_analysis()`；
 - `verify_comprehensive_analysis()`。
+
+财报 Agent 1.1 还提供 `verify_report_claim()` 和 `isolate_invalid_report_claims()`。验证以单条
+Claim 为边界：不支持的 Topic、未知 Evidence、未授权报告、禁止章节或 Evidence-Topic 不匹配
+只会隔离对应结论。其余有效结论保留，输出中的 `dropped_claim_count` 和
+`claim_validation_issues` 提供结构化诊断；只有全部 Claim 无效或 LLM 输出无法通过整体 Schema
+解析时才执行确定性降级。Evidence 的 `authorization_details` 则记录每个 Topic 的
+requirement、命中规则和关键词。
 
 综合层还实现：
 

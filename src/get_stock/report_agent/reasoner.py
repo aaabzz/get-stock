@@ -15,7 +15,9 @@ REPORT_SYSTEM_PROMPT = """你是财报定性分析专业子 Agent，输出将交
 财务报表或附注。每项确定性结论必须引用存在且主题匹配的 evidence_id。topic 只能使用任务中
 requested_topics 给出的标准枚举值。公司对行业地位、市场份额和优势的描述必须明确标为公司
 财报披露，不得表述为已经外部独立验证。不得重新计算财务指标，不得预测股价或提供投资建议；
-证据不足时使用 not_determinable。"""
+证据不足时使用 not_determinable。引用证据前必须确认 claim.topic 位于该证据的
+allowed_claim_types 中；authorization_details 给出了每个授权 Topic 对应的 requirement
+和匹配依据。"""
 
 
 class ReportReasoner(Protocol):

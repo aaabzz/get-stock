@@ -136,7 +136,11 @@ def retrieve_report_chunks(
     selection_order: list[tuple[str, str]] = []
 
     def add_selected(
-        chunk: dict[str, Any], requirement: ReportRequirement, *, adjacent: bool = False
+        chunk: dict[str, Any],
+        requirement: ReportRequirement | None = None,
+        *,
+        adjacent: bool = False,
+        authorize: bool = True,
     ) -> None:
         key = (str(chunk["announcement_id"]), str(chunk["chunk_id"]))
         if key not in selected:
@@ -147,6 +151,7 @@ def retrieve_report_chunks(
                 "_selection_reasons": list(chunk.get("_selection_reasons", [])),
                 "_topics": [],
                 "_requirement_ids": [],
+                "_topic_authorizations": {},
             }
             selection_order.append(key)
         item = selected[key]
@@ -157,10 +162,27 @@ def retrieve_report_chunks(
         for reason in chunk.get("_selection_reasons", []):
             if reason not in item["_selection_reasons"]:
                 item["_selection_reasons"].append(reason)
-        if requirement.topic not in item["_topics"]:
-            item["_topics"].append(requirement.topic)
-        if requirement.requirement_id not in item["_requirement_ids"]:
-            item["_requirement_ids"].append(requirement.requirement_id)
+        if authorize and requirement is not None:
+            if requirement.topic not in item["_topics"]:
+                item["_topics"].append(requirement.topic)
+            if requirement.requirement_id not in item["_requirement_ids"]:
+                item["_requirement_ids"].append(requirement.requirement_id)
+            authorization = item["_topic_authorizations"].setdefault(
+                requirement.topic,
+                {
+                    "requirement_ids": [],
+                    "match_reasons": [],
+                    "matched_keywords": [],
+                },
+            )
+            if requirement.requirement_id not in authorization["requirement_ids"]:
+                authorization["requirement_ids"].append(requirement.requirement_id)
+            for reason in chunk.get("_selection_reasons", []):
+                if reason not in authorization["match_reasons"]:
+                    authorization["match_reasons"].append(reason)
+            for keyword in chunk.get("_matched_keywords", []):
+                if keyword not in authorization["matched_keywords"]:
+                    authorization["matched_keywords"].append(keyword)
         if adjacent and "adjacent_context" not in item["_selection_reasons"]:
             item["_selection_reasons"].append("adjacent_context")
 
@@ -184,8 +206,26 @@ def retrieve_report_chunks(
             end = min(len(order), position + task.retrieval.adjacent_window + 1)
             for chunk_id in order[start:end]:
                 neighbor = chunk_lookup[(key[0], chunk_id)]
+                # Adjacent chunks are useful context, but adjacency alone does not
+                # authorize them to support a claim. Re-evaluate the neighbor for
+                # every requirement that selected the primary chunk.
+                add_selected(neighbor, adjacent=True, authorize=False)
                 for requirement_id in list(item["_requirement_ids"]):
-                    add_selected(neighbor, requirements_by_id[requirement_id], adjacent=True)
+                    requirement = requirements_by_id[requirement_id]
+                    score, keywords, reasons = _score_chunk(neighbor, requirement)
+                    if score <= 0:
+                        continue
+                    add_selected(
+                        {
+                            **neighbor,
+                            "_score": score,
+                            "_matched_keywords": keywords,
+                            "_selection_reasons": reasons,
+                        },
+                        requirement,
+                        adjacent=True,
+                        authorize=True,
+                    )
 
     retained: list[dict[str, Any]] = []
     character_count = 0

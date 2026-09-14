@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, TypedDict
 
 from get_stock.report_agent.agent import ReportAnalysisAgent
-from get_stock.report_agent.schemas import ReportLLMAnalysis
+from get_stock.report_agent.schemas import ReportClaimValidationIssue, ReportLLMAnalysis
 
 
 class ReportGraphState(TypedDict, total=False):
@@ -12,6 +12,7 @@ class ReportGraphState(TypedDict, total=False):
     retrieved: dict[str, Any]
     llm_analysis: ReportLLMAnalysis
     llm_used: bool
+    claim_validation_issues: list[ReportClaimValidationIssue]
     result: dict[str, Any]
 
 
@@ -31,14 +32,19 @@ def build_report_graph(agent: ReportAnalysisAgent):
         return {"retrieved": agent.retrieve(state["prepared"])}
 
     def reason_node(state: ReportGraphState) -> ReportGraphState:
-        analysis, llm_used = agent.reason(state["retrieved"])
-        return {"llm_analysis": analysis, "llm_used": llm_used}
+        analysis, llm_used, validation_issues = agent.reason(state["retrieved"])
+        return {
+            "llm_analysis": analysis,
+            "llm_used": llm_used,
+            "claim_validation_issues": validation_issues,
+        }
 
     def finalize_node(state: ReportGraphState) -> ReportGraphState:
         result = agent.finalize(
             state["retrieved"],
             state["llm_analysis"],
             llm_used=state["llm_used"],
+            validation_issues=state.get("claim_validation_issues", []),
         )
         return {"result": result.model_dump(mode="json")}
 

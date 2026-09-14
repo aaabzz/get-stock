@@ -14,12 +14,13 @@ from get_stock.report_agent.schemas import (
     MissingReportData,
     ReportAnalysisResult,
     ReportAnalysisTask,
+    ReportClaimValidationIssue,
     ReportEvidence,
     ReportLLMAnalysis,
 )
-from get_stock.report_agent.verifier import verify_report_analysis
+from get_stock.report_agent.verifier import isolate_invalid_report_claims
 
-AGENT_VERSION = "1.0"
+AGENT_VERSION = "1.1"
 CHINA_TZ = timezone(timedelta(hours=8), name="Asia/Shanghai")
 BASE_LIMITATIONS = (
     "仅使用上游授权完整财报的 chunks.jsonl，不读取PDF、页面文件或章节文件",
@@ -43,8 +44,13 @@ class ReportAnalysisAgent:
     def analyze(self, task: ReportAnalysisTask | dict[str, Any]) -> ReportAnalysisResult:
         prepared = self.prepare(task)
         retrieved = self.retrieve(prepared)
-        analysis, llm_used = self.reason(retrieved)
-        return self.finalize(retrieved, analysis, llm_used=llm_used)
+        analysis, llm_used, validation_issues = self.reason(retrieved)
+        return self.finalize(
+            retrieved,
+            analysis,
+            llm_used=llm_used,
+            validation_issues=validation_issues,
+        )
 
     def prepare(self, task: ReportAnalysisTask | dict[str, Any]) -> dict[str, Any]:
         try:
@@ -94,6 +100,7 @@ class ReportAnalysisAgent:
                     matched_keywords=list(chunk.get("_matched_keywords", [])),
                     selection_reasons=list(chunk.get("_selection_reasons", [])),
                     allowed_claim_types=list(chunk.get("_topics", [])),
+                    authorization_details=dict(chunk.get("_topic_authorizations", {})),
                 ).model_dump(mode="json")
                 | {"text": str(chunk.get("text") or "")}
             )
@@ -159,15 +166,17 @@ class ReportAnalysisAgent:
             "requested_topic_count": requested,
         }
 
-    def reason(self, retrieved: dict[str, Any]) -> tuple[ReportLLMAnalysis, bool]:
+    def reason(
+        self, retrieved: dict[str, Any]
+    ) -> tuple[ReportLLMAnalysis, bool, list[ReportClaimValidationIssue]]:
         task: ReportAnalysisTask = retrieved["task"]
         packet = self._evidence_packet(retrieved)
         if retrieved["status"] == "insufficient_data":
-            return deterministic_reasoner(packet), False
+            return deterministic_reasoner(packet), False, []
         if self.reasoner is None:
             if task.constraints.require_llm:
                 raise ReportAnalysisError("task requires an LLM but no reasoner was injected")
-            return deterministic_reasoner(packet), False
+            return deterministic_reasoner(packet), False, []
         try:
             analysis = self.reasoner(packet)
             analysis = (
@@ -175,14 +184,38 @@ class ReportAnalysisAgent:
                 if isinstance(analysis, ReportLLMAnalysis)
                 else ReportLLMAnalysis.model_validate(analysis)
             )
-            verify_report_analysis(analysis, retrieved["evidence"], task)
+            valid_claims, validation_issues = isolate_invalid_report_claims(
+                analysis, retrieved["evidence"], task
+            )
         except Exception as exc:  # retain retrieved report evidence when the LLM output is invalid
             fallback = deterministic_reasoner(packet)
             fallback.limitations.append(
                 "财报分析 LLM 输出未通过校验，已降级为确定性分析：" + str(exc)
             )
-            return fallback, False
-        return analysis, True
+            return fallback, False, []
+        if validation_issues and not valid_claims:
+            fallback = deterministic_reasoner(packet)
+            fallback.limitations.append(
+                f"财报分析 LLM 的 {len(validation_issues)} 条结论均未通过证据校验，"
+                "已降级为确定性分析"
+            )
+            return fallback, False, validation_issues
+        if validation_issues:
+            safe_summary = (
+                f"财报分析 LLM 有 {len(valid_claims)} 条结论通过证据校验，"
+                f"另有 {len(validation_issues)} 条不合规结论已隔离。"
+            )
+            if valid_claims:
+                safe_summary += " " + "；".join(claim.claim for claim in valid_claims)
+            analysis = ReportLLMAnalysis(
+                summary=safe_summary,
+                claims=valid_claims,
+                limitations=[
+                    *analysis.limitations,
+                    f"已隔离 {len(validation_issues)} 条未通过逐条证据校验的 LLM 结论",
+                ],
+            )
+        return analysis, True, validation_issues
 
     def finalize(
         self,
@@ -190,6 +223,7 @@ class ReportAnalysisAgent:
         analysis: ReportLLMAnalysis,
         *,
         llm_used: bool,
+        validation_issues: list[ReportClaimValidationIssue] | None = None,
     ) -> ReportAnalysisResult:
         task: ReportAnalysisTask = retrieved["task"]
         public_evidence = [
@@ -224,6 +258,8 @@ class ReportAnalysisAgent:
             selected_chunk_count=len(public_evidence),
             summary=analysis.summary,
             claims=analysis.claims,
+            dropped_claim_count=len(validation_issues or []),
+            claim_validation_issues=validation_issues or [],
             evidence=[ReportEvidence.model_validate(item) for item in public_evidence],
             missing_data=retrieved["missing_data"],
             limitations=list(dict.fromkeys([*BASE_LIMITATIONS, *analysis.limitations])),

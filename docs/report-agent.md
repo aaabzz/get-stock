@@ -1,4 +1,4 @@
-# 财报定性分析 Agent（v1.0）
+# 财报定性分析 Agent（v1.1）
 
 ## 定位
 
@@ -95,9 +95,13 @@ Supervisor 必须保证任务中的报告已经过完整报告识别和内容验
 2. 排除禁止章节和正文中残留的禁止章节标题。
 3. 根据主题目录和上游 `preferred_headings` 执行 heading 命中。
 4. 只在命中章节内按主题关键词给正文评分。
-5. 每个需求保留 `top_k` 个主要 chunk，并在同一章节内补充有限相邻 chunk。
-6. 按 `max_context_characters` 控制发送给推理器的总文本量。
-7. 没有 heading 或正文证据时返回 `insufficient_data`，不调用 LLM。
+5. 每个 requirement 独立判断 heading 和正文关键词；同一 chunk 分别命中多个 requirement
+   时，将对应 Topic 精确合并到 `allowed_claim_types`。
+6. 每个需求保留 `top_k` 个主要 chunk，并在同一章节内补充有限相邻 chunk。相邻关系只授予
+   上下文读取资格，不会自动继承主 chunk 的 Topic；相邻 chunk 必须对该 requirement 重新
+   匹配成功才能获得结论授权。
+7. 按 `max_context_characters` 控制发送给推理器的总文本量。
+8. 没有 heading 或正文证据时返回 `insufficient_data`，不调用 LLM。
 
 第一版采用可解释的 heading、章节和关键词评分，不使用向量数据库。当前 `heading` 是一级章节，
 因此 heading 用于章节准入，正文关键词用于选择具体 chunk。
@@ -112,8 +116,15 @@ JSON Schema。每条非 `not_determinable` 结论必须引用存在的 `evidence
 - evidence 不属于禁止章节；
 - evidence 的主题权限能够支持该 claim。
 
-LLM 输出未通过上述校验时，使用已经检索到的 chunk 证据生成确定性结果，并在
-`limitations` 记录降级原因。
+每条 Evidence 除 `allowed_claim_types` 外，还输出 `authorization_details`，记录每个获授权
+Topic 的 `requirement_ids`、`match_reasons` 和 `matched_keywords`，便于审计授权来源。
+
+校验器按单条 Claim 隔离错误：一条结论不合规时，只剔除该条，其他通过校验的 LLM 结论继续
+进入结果，此时 `llm_used=true`。结果通过 `dropped_claim_count` 和
+`claim_validation_issues` 记录剔除数量、结论序号、错误类型和证据 ID。为防止原始 summary
+夹带已剔除结论，只要发生隔离，summary 就根据保留结论确定性重建。如果全部 Claim 都无效，
+才整体降级为确定性检索并令 `llm_used=false`；无法解析成 `ReportLLMAnalysis` 的 Schema 级
+错误仍然需要整体降级。
 
 公司披露的市场份额、行业地位和优势必须使用“公司在财报中披露”等限定表述，不能视为已经
 外部独立验证。

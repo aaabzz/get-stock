@@ -29,8 +29,15 @@ DENIED_HEADING_ALIASES: Final[tuple[str, ...]] = (
 
 REPORT_TOPIC_CATALOG: Final[dict[str, dict[str, tuple[str, ...]]]] = {
     "business_overview": {
-        "preferred_sections": ("company_profile", "business_overview"),
-        "heading_aliases": ("公司简介", "公司业务概要", "公司业务概述", "公司主要业务"),
+        "preferred_sections": ("company_profile", "business_overview", "management_discussion"),
+        "heading_aliases": (
+            "公司简介",
+            "公司业务概要",
+            "公司业务概述",
+            "公司主要业务",
+            "管理层讨论与分析",
+            "经营情况讨论与分析",
+        ),
         "keywords": ("主营业务", "主要业务", "业务模式", "产品", "服务"),
     },
     "industry_position": {

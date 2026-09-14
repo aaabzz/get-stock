@@ -160,6 +160,31 @@ class ReportLLMAnalysis(BaseModel):
     limitations: list[str] = Field(default_factory=list)
 
 
+class ReportEvidenceAuthorization(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    requirement_ids: list[str] = Field(default_factory=list)
+    match_reasons: list[str] = Field(default_factory=list)
+    matched_keywords: list[str] = Field(default_factory=list)
+
+
+class ReportClaimValidationIssue(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    claim_index: int = Field(ge=0)
+    topic: ReportTopic
+    evidence_ids: list[str] = Field(default_factory=list)
+    reason_code: Literal[
+        "unrequested_topic",
+        "unknown_evidence",
+        "missing_evidence",
+        "unauthorized_report",
+        "denied_section",
+        "evidence_topic_mismatch",
+    ]
+    reason: str
+
+
 class ReportEvidence(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -178,6 +203,9 @@ class ReportEvidence(BaseModel):
     matched_keywords: list[str]
     selection_reasons: list[str]
     allowed_claim_types: list[ReportTopic]
+    authorization_details: dict[ReportTopic, ReportEvidenceAuthorization] = Field(
+        default_factory=dict
+    )
 
 
 class ReportAnalysisResult(BaseModel):
@@ -199,6 +227,8 @@ class ReportAnalysisResult(BaseModel):
     selected_chunk_count: int
     summary: str
     claims: list[ReportClaim]
+    dropped_claim_count: int = Field(default=0, ge=0)
+    claim_validation_issues: list[ReportClaimValidationIssue] = Field(default_factory=list)
     evidence: list[ReportEvidence]
     missing_data: list[MissingReportData]
     limitations: list[str]
