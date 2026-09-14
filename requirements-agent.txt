@@ -1,0 +1,6 @@
+# Optional financial Agent dependencies
+langchain>=1.0,<2.0
+langgraph>=1.0,<2.0
+
+# DeepSeek uses an OpenAI-compatible API, so this integration supplies ChatOpenAI.
+langchain-openai>=1.0,<2.0

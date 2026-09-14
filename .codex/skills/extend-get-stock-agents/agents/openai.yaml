@@ -1,0 +1,4 @@
+interface:
+  display_name: "Extend get-stock Agents"
+  short_description: "Add registry-driven specialist agents safely"
+  default_prompt: "Use $extend-get-stock-agents to add a new specialist agent to get-stock."
